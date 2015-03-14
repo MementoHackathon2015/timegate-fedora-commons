@@ -17,35 +17,56 @@ import requests
 
 # For custom errors sent to client
 from errors.timegateerrors import HandlerError
+from core.timegate_utils import date_str
 
 
 class FedoraHandler(Handler):
 
     def __init__(self):
         Handler.__init__(self)
-        # Initialization code here. This part is run only once
         self.path_pattern = re.compile("^/fedora/objects/([a-zA-Z0-9\\_\\:\\-]+)/datastreams/([a-zA-Z0-9\\_\\:\\-]+)/content$")
+        self.TIMESTAMPFMT = '%Y-%m-%dT%H:%M:%S.%NZ'
 
-    # This is the function to implement: return list of tuples: [(uri_m,datetime),..]
     def get_all_mementos(self, uri_r):
-        uri_r = self.fix_url(uri_r)
+
         #validation on uri_r
-        parse_r = urllib2.urlparse.urlparse(uri_r)
-        path = parse_r.path
-        m = self.path_pattern.match(path)
-        if not(m):
-            raise HandlerError("Invalid URI-R for fedora handler. Must be url of datastream.")
+        uri_r = self.fix_url(uri_r)
+        logging.debug(uri_r)
+        self.validate_url(uri_r)
 
         #fetch all versions
         dates = self.all_versions(uri_r)
         tuples = [ (uri_r+"?asOfDateTime="+d,d) for d in dates ]
         return tuples
 
-    # Implement this function instead to bypass the TimeGate's best Memento selection algorithm.
-    # Also, it can be used if the whole list cannot be accessed easily.
-    # If both get_all_mementos() and get_memento() are implemented. get_memento() will always be preferred by the TimeGate.
     def get_memento(self, uri_r, req_datetime):
-        raise HandlerError("Cannot find expected resource",status=404)
+        timestamp = date_str(req_datetime, self.TIMESTAMPFMT)
+
+        #validation on uri_r
+        uri_r = self.fix_url(uri_r)
+        self.validate_url(uri_r)
+
+        url = uri_r.replace("/content","")
+
+        #try endpoint
+        r = requests.get(url,params={ "asOfDateTime":timestamp,"format":"xml" })
+        if r.status == 404:
+            raise HandlerError("Cannot find expected resource",status=404)
+
+        doc = self.parse_xml(r.text)
+        context = doc.xpathNewContext()
+        context.xpathRegisterNs("fedora","http://www.fedora.info/definitions/1/0/management/")
+        dsCreateDate = context.xpathEval("/fedora:datastreamProfile/fedora:dsCreateDate")[0].content
+
+        return (uri_r+"?asOfDateTime="+dsCreateDate,dsCreateDate)
+
+    def validate_url(self,uri_r):
+        #validation on uri_r
+        parse_r = urllib2.urlparse.urlparse(uri_r)
+        path = parse_r.path
+        m = self.path_pattern.match(path)
+        if not(m):
+            raise HandlerError("Invalid URI-R for fedora handler. Must be url of datastream.")
 
     def fix_url(self,url):
         return urllib.unquote(url).decode('utf8')
